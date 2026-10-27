@@ -5,6 +5,7 @@ import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import './styles.css';
 import { PURCHASE_CATALOG } from './purchaseCatalog';
+import AdminPanel from './AdminPanel';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -13,6 +14,28 @@ const supabase = SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY
   : null;
 
 let webAppServiceWorkerPromise = null;
+
+// Selector del login: Farmacia o Administración, igual que Domiciliario o
+// Administrador en la APK. Se recuerda en este navegador.
+const LOGIN_MODE_KEY = 'farmanorte.loginMode';
+let pendingLoginError = '';
+
+function readLoginMode() {
+  try {
+    const value = window.localStorage.getItem(LOGIN_MODE_KEY);
+    return value === 'admin' || value === 'pharmacy' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLoginMode(value) {
+  try {
+    window.localStorage.setItem(LOGIN_MODE_KEY, value);
+  } catch {
+    // Sin almacenamiento: el selector funciona solo en esta pantalla.
+  }
+}
 
 function getWebPushCapability() {
   const hasWindow = typeof window !== 'undefined';
@@ -184,7 +207,7 @@ const PAYMENT_LABELS = {
   digital: 'Tarjeta o QR',
 };
 
-const MAX_COMBINATION_TASKS = 4;
+const MAX_COMBINATION_TASKS = 6;
 
 const BASE_SERVICE_TYPES = [
   {
@@ -248,6 +271,59 @@ const SERVICE_TYPES = [
       buildCombinationServiceType(purchaseCount, crossCount)
     ))
   )).flat().filter(Boolean),
+];
+
+function getServiceMenuKey(service) {
+  if (service.value === 'Domicilio normal') return 'normal';
+  if (service.value === 'Compra externa') return 'purchase';
+  if (service.value === 'Cruce farmacia') return 'cross';
+  if (service.kind === 'combinedService') {
+    if (service.requiresPurchase && service.requiresCross) return 'domicilioPurchaseCross';
+    if (service.requiresPurchase) return 'domicilioPurchase';
+    if (service.requiresCross) return 'domicilioCross';
+  }
+  return null;
+}
+
+function buildBasicCombinationServiceType(purchaseCount, crossCount, label, description, menuKey) {
+  const service = SERVICE_TYPES.find((item) => item.kind === 'combinedService'
+    && item.purchaseCount === purchaseCount
+    && item.crossCount === crossCount);
+  return {
+    ...service,
+    label,
+    description,
+    menuKey,
+  };
+}
+
+// Menú visible: solo las seis operaciones básicas. Las combinaciones mayores
+// se configuran con los contadores que aparecen después de elegir una opción.
+const BASIC_SERVICE_TYPES = [
+  { ...BASE_SERVICE_TYPES[0], menuKey: 'normal' },
+  { ...BASE_SERVICE_TYPES[1], menuKey: 'purchase' },
+  { ...BASE_SERVICE_TYPES[2], menuKey: 'cross' },
+  buildBasicCombinationServiceType(
+    0,
+    1,
+    'Domicilio con cruce',
+    'Recoge el pedido en esta farmacia y el producto en otra farmacia.',
+    'domicilioCross',
+  ),
+  buildBasicCombinationServiceType(
+    1,
+    0,
+    'Domicilio con compra',
+    'Entrega el pedido y realiza una compra externa.',
+    'domicilioPurchase',
+  ),
+  buildBasicCombinationServiceType(
+    1,
+    1,
+    'Domicilio con compra y cruce',
+    'Entrega el pedido, compra fuera de la red y recoge un cruce.',
+    'domicilioPurchaseCross',
+  ),
 ];
 
 const DELIVERY_STATUS = {
@@ -375,7 +451,13 @@ function formatDeliveryPublicCode(value) {
 
 function getServiceTypeConfig(value) {
   const base = SERVICE_TYPES.find((service) => service.value === value) ?? SERVICE_TYPES[0];
-  return { ...base, persistedValue: base.value };
+  const menuOption = BASIC_SERVICE_TYPES.find((service) => service.value === base.value);
+  return {
+    ...base,
+    ...(menuOption ? { label: menuOption.label, description: menuOption.description } : {}),
+    menuKey: menuOption?.menuKey ?? getServiceMenuKey(base),
+    persistedValue: base.value,
+  };
 }
 
 function isDomicilioServiceType(value) {
@@ -761,6 +843,7 @@ function NavIcon({ name }) {
     schedule: <><rect x="4.5" y="5.5" width="15" height="14" rx="2" /><path d="M8 3.5v4M16 3.5v4M4.5 9.5h15" /><path d="M8 13h.01M12 13h.01M16 13h.01M8 16h.01M12 16h.01" /></>,
     settings: <><path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z" /><path d="m19.4 13.6 1.1.9-1.7 3-1.4-.5a7.9 7.9 0 0 1-1.8 1l-.2 1.5h-3.4l-.2-1.5a7.9 7.9 0 0 1-1.8-1l-1.4.5-1.7-3 1.1-.9a7.5 7.5 0 0 1 0-2.1l-1.1-.9 1.7-3 1.4.5a7.9 7.9 0 0 1 1.8-1l.2-1.5h3.4l.2 1.5a7.9 7.9 0 0 1 1.8 1l1.4-.5 1.7 3-1.1.9a7.5 7.5 0 0 1 0 2.1Z" /></>,
     reception: <><path d="M5 9.5h14v9H5zM7.5 9.5V6.8h9v2.7M8 13h8M8 16h5" /><path d="M3.5 18.5h17" /></>,
+    logout: <><path d="M10 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19H10" /><path d="M13 7l5 5-5 5M18 12H8" /></>,
   };
   return <svg className="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.publish}</svg>;
 }
@@ -851,10 +934,20 @@ function MandatoryPasswordScreen({ profile }) {
 }
 
 function LoginScreen() {
+  const [mode, setMode] = useState(() => readLoginMode() ?? 'pharmacy');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => {
+    const message = pendingLoginError;
+    pendingLoginError = '';
+    return message;
+  });
+  const isAdminMode = mode === 'admin';
+  const chooseMode = (value) => {
+    setMode(value);
+    setError('');
+  };
   const atmosphereOrbitRef = useRef(null);
   const atmosphereGlowRef = useRef(null);
   const atmosphereFrameRef = useRef(null);
@@ -895,6 +988,7 @@ function LoginScreen() {
     event.preventDefault();
     setSubmitting(true);
     setError('');
+    writeLoginMode(mode);
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: normalizeAuthIdentifier(email), password });
     if (signInError) setError(getErrorMessage(signInError));
     setSubmitting(false);
@@ -912,9 +1006,14 @@ function LoginScreen() {
       <main className="auth-main">
         <div className="auth-form-wrap" onPointerMove={moveAtmosphere} onPointerLeave={resetAtmosphere}>
           <LoginFormAtmosphere orbitRef={atmosphereOrbitRef} glowRef={atmosphereGlowRef} />
-          <span className="section-kicker">Acceso de farmacia</span>
+          <div className="auth-role-switch" role="radiogroup" aria-label="Tipo de acceso">
+            {[['pharmacy', 'Farmacia'], ['admin', 'Administración']].map(([value, label]) => (
+              <button key={value} type="button" role="radio" aria-checked={mode === value} className={mode === value ? 'auth-role-option active' : 'auth-role-option'} onClick={() => chooseMode(value)}>{label}</button>
+            ))}
+          </div>
+          <span className="section-kicker">{isAdminMode ? 'Acceso de administración' : 'Acceso de farmacia'}</span>
           <h2>Inicia sesión</h2>
-          <p className="auth-copy">Usa el usuario que el administrador creó para tu farmacia.</p>
+          <p className="auth-copy">{isAdminMode ? 'Usa tu usuario de administrador para ver estadísticas, turnos, domiciliarios, zonas y farmacias.' : 'Usa el usuario que el administrador creó para tu farmacia.'}</p>
           {error && <div className="inline-alert error-alert" role="alert">{error}</div>}
           <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
             <Field label="Usuario o correo" required>
@@ -923,7 +1022,7 @@ function LoginScreen() {
             <Field label="Contraseña" required>
               <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" autoComplete="current-password" required />
             </Field>
-            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Validando…' : 'Entrar al panel'} <span>→</span></button>
+            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Validando…' : isAdminMode ? 'Entrar a administración' : 'Entrar al panel'} <span>→</span></button>
           </form>
           <div className="auth-note"><span>●</span> Autenticación protegida por Supabase Auth</div>
         </div>
@@ -956,15 +1055,12 @@ function PharmacyProfileChooser({ pharmacy, profiles, onSelect, onSignOut }) {
 }
 
 function PurchaseTaskRow({ item, index, canRemove, onChange, onRemove }) {
-  const catalogMerchant = PURCHASE_CATALOG.find((merchant) => merchant.name === item.merchant);
-  const catalogBranches = catalogMerchant?.branches ?? [];
-  const selectedBranch = catalogBranches.find((branch) => branch.name === item.branch);
   return (
     <fieldset className="task-row">
       <legend>Compra {index + 1}</legend>
       <div className="task-row-grid purchase-task-grid">
         <label className="field"><span>Farmacia o cadena <em>*</em></span><select value={item.merchant} onChange={(event) => onChange('merchant', event.target.value)}><option value="">Selecciona una cadena</option>{PURCHASE_CATALOG.map((merchant) => <option key={merchant.name} value={merchant.name}>{merchant.name}</option>)}</select></label>
-        <label className="field"><span>Sede <em>*</em></span><select value={item.branch} onChange={(event) => onChange('branch', event.target.value)} disabled={!catalogMerchant}><option value="">{catalogMerchant ? 'Selecciona una sede' : 'Primero elige la cadena'}</option>{catalogBranches.map((branch) => <option key={`${item.id}-${branch.name}`} value={branch.name}>{`${branch.name} — ${branch.address}`}</option>)}</select>{selectedBranch && <small className="purchase-branch-detail">{selectedBranch.address}{selectedBranch.details ? ` · ${selectedBranch.details}` : ''}</small>}</label>
+        <label className="field"><span>Sede o punto de compra <em>*</em></span><input value={item.branch} onChange={(event) => onChange('branch', event.target.value)} placeholder="Ej. Monteverde, Pradera, Nirvana o Recreo" autoComplete="off" /><small className="purchase-branch-detail">Escribe la sede exacta donde se realizará la compra.</small></label>
         <label className="field"><span>Producto <em>*</em></span><input value={item.product} onChange={(event) => onChange('product', event.target.value)} placeholder="Nombre del producto" /></label>
         <label className="field quantity-field"><span>Cantidad <em>*</em></span><input type="number" min="1" step="1" value={item.quantity} onChange={(event) => onChange('quantity', event.target.value)} inputMode="numeric" /></label>
         <label className="field task-row-wide"><span>Instrucción de compra</span><input value={item.notes} onChange={(event) => onChange('notes', event.target.value)} placeholder="Referencia, presentación o detalle para identificarlo" /></label>
@@ -1022,8 +1118,6 @@ function App() {
   const [chatDeliveryId, setChatDeliveryId] = useState(null);
   const [equivalentDeliveryId, setEquivalentDeliveryId] = useState(null);
   const [form, setForm] = useState(emptyForm);
-  const [purchaseFilter, setPurchaseFilter] = useState('');
-  const [crossFilter, setCrossFilter] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [webPushState, setWebPushState] = useState(getInitialWebPushState);
 
@@ -1117,6 +1211,24 @@ function App() {
       void registerWebPushSubscription(userId).then((pushState) => {
         if (isCurrent()) setWebPushState(pushState);
       });
+      // Igual que la APK: el rol debe coincidir con la opción elegida al entrar.
+      const loginMode = readLoginMode();
+      const roleMismatch = loginMode === 'admin'
+        ? profileData.role !== 'admin'
+        : loginMode === 'pharmacy' && profileData.role === 'admin';
+      if (roleMismatch) {
+        pendingLoginError = loginMode === 'admin'
+          ? 'Este usuario no tiene rol de administrador. Elige «Farmacia» para entrar.'
+          : 'Este usuario es administrador. Elige «Administración» para entrar.';
+        setLoading(false);
+        await supabase.auth.signOut();
+        return;
+      }
+      if (profileData.role === 'admin') {
+        // El administrador usa el panel de administración; no necesita farmacia.
+        setLoading(false);
+        return;
+      }
       if (profileData.role !== 'pharmacy') {
         setError(`Esta página es para usuarios de farmacia. Tu rol actual es ${profileData.role}.`);
         setLoading(false);
@@ -1616,23 +1728,7 @@ function App() {
   };
 
   const selectedServiceType = getServiceTypeConfig(form.serviceType);
-  const serviceFilterActive = purchaseFilter !== '' || crossFilter !== '';
-  const filteredServiceTypes = serviceFilterActive
-    ? SERVICE_TYPES
-      .filter((service) => {
-        const servicePurchaseCount = service.purchaseCount ?? 0;
-        const serviceCrossCount = service.crossCount ?? 0;
-        const selectedPurchaseCount = purchaseFilter === '' ? 0 : Number(purchaseFilter);
-        const selectedCrossCount = crossFilter === '' ? 0 : Number(crossFilter);
-        return servicePurchaseCount === selectedPurchaseCount && serviceCrossCount === selectedCrossCount;
-      })
-      .sort((first, second) => {
-        const firstCombined = first.kind === 'combinedService';
-        const secondCombined = second.kind === 'combinedService';
-        if (firstCombined !== secondCombined) return firstCombined ? -1 : 1;
-        return SERVICE_TYPES.indexOf(first) - SERVICE_TYPES.indexOf(second);
-      })
-    : SERVICE_TYPES;
+  const visibleServiceTypes = BASIC_SERVICE_TYPES;
   const hasTaskDetails = Boolean(selectedServiceType.requiresPurchase || selectedServiceType.requiresCross);
   const requiresClient = Boolean(selectedServiceType.requiresClient);
   const requiresPayment = Boolean(selectedServiceType.requiresPayment);
@@ -1760,6 +1856,28 @@ function App() {
         cashExpected: nextServiceType.requiresPayment ? current.cashExpected : '',
         purchaseItems: nextPurchaseItems,
         crossStops: nextCrossStops,
+      };
+    });
+  };
+
+  const updateTaskCount = (taskType, rawValue) => {
+    const count = clampCombinationCount(rawValue);
+    setForm((current) => {
+      const purchaseItems = taskType === 'purchase'
+        ? resizeTaskRows(current.purchaseItems, count, createPurchaseItem)
+        : current.purchaseItems;
+      const crossStops = taskType === 'cross'
+        ? resizeTaskRows(current.crossStops, count, createCrossStop)
+        : current.crossStops;
+      const nextServiceType = isDomicilioServiceType(current.serviceType)
+        ? findDomicilioCombination(purchaseItems.length, crossStops.length)
+        : getServiceTypeConfig(current.serviceType);
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        purchaseItems,
+        crossStops,
       };
     });
   };
@@ -2026,6 +2144,9 @@ function App() {
   if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => { setRecoveryMode(false); window.history.replaceState({}, '', window.location.pathname); }} />;
   if (!session) return <LoginScreen />;
   if (profile?.must_change_password) return <MandatoryPasswordScreen profile={profile} />;
+  if (profile?.role === 'admin' && profile.active && !loading) {
+    return <AdminPanel client={supabase} profile={profile} onSignOut={signOut} Logo={BrandLogo} Background={LiveBackground} />;
+  }
   if (error && (!profile || profile.role !== 'pharmacy' || !pharmacy)) {
     return <AccessProblem error={error} onSignOut={signOut} />;
   }
@@ -2093,10 +2214,13 @@ function App() {
             <span className="nav-icon"><NavIcon name="settings" /></span>
             <span>Ajustes</span>
           </button>
+          <button type="button" className="nav-item nav-item-logout" onClick={signOut}>
+            <span className="nav-icon"><NavIcon name="logout" /></span>
+            <span>Cerrar sesión</span>
+          </button>
         </nav>
 
         <div className="sidebar-bottom">
-          <button type="button" className="sign-out-link" onClick={signOut}>Cerrar sesión <span>↗</span></button>
           <div className="connection-card">
             <span className="pulse-dot" />
             <div>
@@ -2156,19 +2280,21 @@ function App() {
                   <div className="form-section-title"><span>1</span><div><strong>¿Qué necesitas gestionar?</strong><small>Elige la operación para mostrar solo los datos necesarios.</small></div></div>
                   <div className="operation-picker field">
                     <span>Tipo de operación <em> *</em></span>
-                    <div className="service-filter" aria-label="Filtrar combinaciones de compras y cruces">
-                      <div className="service-filter-header">
-                        <div><strong>Filtro rápido</strong><small>Deja ambos vacíos para ver todas las opciones.</small></div>
-                        {serviceFilterActive && <button type="button" className="text-button" onClick={() => { setPurchaseFilter(''); setCrossFilter(''); }}>Mostrar todas</button>}
+                    <div className="custom-service-builder" aria-label="Configurar tipo de operación">
+                      <div className="custom-service-builder-heading">
+                        <div><strong>Servicio básico</strong><small>Elige una opción y luego indica cuántas compras o cruces necesitas.</small></div>
+                        <span className="custom-service-badge">Hasta {MAX_COMBINATION_TASKS}</span>
                       </div>
-                      <div className="service-filter-fields">
-                        <label className="service-filter-field"><span>¿Cuántas compras?</span><input type="number" min="0" max={MAX_COMBINATION_TASKS} step="1" inputMode="numeric" placeholder="0" value={purchaseFilter} onChange={(event) => setPurchaseFilter(event.target.value === '' ? '' : String(clampCombinationCount(event.target.value)))} /></label>
-                        <label className="service-filter-field"><span>¿Cuántos cruces?</span><input type="number" min="0" max={MAX_COMBINATION_TASKS} step="1" inputMode="numeric" placeholder="0" value={crossFilter} onChange={(event) => setCrossFilter(event.target.value === '' ? '' : String(clampCombinationCount(event.target.value)))} /></label>
+                      <div className="service-type-grid basic-service-grid" role="group" aria-label="Tipo de operación">
+                        {visibleServiceTypes.map((service) => <button type="button" key={service.value} className={selectedServiceType.menuKey === service.menuKey ? 'service-type-choice active' : 'service-type-choice'} aria-pressed={selectedServiceType.menuKey === service.menuKey} onClick={() => updateServiceType(service.value)}><strong>{service.label}</strong><small>{service.description}</small></button>)}
                       </div>
-                      <small className="service-filter-note">{serviceFilterActive ? `Mostrando ${filteredServiceTypes.length} opción${filteredServiceTypes.length === 1 ? '' : 'es'} con esa combinación.` : 'Si escribes solo cruces, las compras quedan en cero; si escribes ambos, busca la combinación exacta.'}</small>
-                    </div>
-                    <div className="service-type-grid" role="group" aria-label="Tipo de operación">
-                      {filteredServiceTypes.map((service) => <button type="button" key={service.value} className={form.serviceType === service.value ? 'service-type-choice active' : 'service-type-choice'} aria-pressed={form.serviceType === service.value} onClick={() => updateServiceType(service.value)}><strong>{service.label}</strong><small>{service.description}</small></button>)}
+                      {(selectedServiceType.requiresPurchase || selectedServiceType.requiresCross) && <>
+                        <div className="operation-counts">
+                          {selectedServiceType.requiresPurchase && <label className="task-count-control"><span className="task-count-copy"><strong>¿Cuántas compras?</strong><small>Se creará una fila para cada compra y su sede.</small></span><select className="task-count-select" aria-label="Cantidad de compras" value={Math.max(1, form.purchaseItems.length)} onChange={(event) => updateTaskCount('purchase', event.target.value)}>{Array.from({ length: MAX_COMBINATION_TASKS }, (_, index) => index + 1).map((count) => <option value={count} key={`purchase-count-${count}`}>{count} {count === 1 ? 'compra' : 'compras'}</option>)}</select></label>}
+                          {selectedServiceType.requiresCross && <label className="task-count-control"><span className="task-count-copy"><strong>¿Cuántos cruces?</strong><small>Se creará una fila para cada farmacia de origen.</small></span><select className="task-count-select" aria-label="Cantidad de cruces" value={Math.max(1, form.crossStops.length)} onChange={(event) => updateTaskCount('cross', event.target.value)}>{Array.from({ length: MAX_COMBINATION_TASKS }, (_, index) => index + 1).map((count) => <option value={count} key={`cross-count-${count}`}>{count} {count === 1 ? 'cruce' : 'cruces'}</option>)}</select></label>}
+                        </div>
+                        <small className="custom-service-summary">Configurarás <strong>{form.purchaseItems.length} {form.purchaseItems.length === 1 ? 'compra' : 'compras'}</strong>{selectedServiceType.requiresCross ? <> y <strong>{form.crossStops.length} {form.crossStops.length === 1 ? 'cruce' : 'cruces'}</strong></> : null}. Puedes agregar o quitar filas antes de publicar.</small>
+                      </>}
                     </div>
                     <p className="operation-helper">{selectedServiceType.description} {operationHelper}</p>
                   </div>
@@ -2188,12 +2314,12 @@ function App() {
                     {selectedServiceType.requiresPurchase && <div className="task-block">
                       <div className="task-block-header"><div><strong>Compras externas</strong><small>El domiciliario comprará fuera de la red de farmacias.</small></div><span className="task-count">{form.purchaseItems.length}</span></div>
                       {form.purchaseItems.map((item, index) => <PurchaseTaskRow key={item.id} item={item} index={index} canRemove={form.purchaseItems.length > 1} onChange={(field, value) => updatePurchaseItem(item.id, field, value)} onRemove={() => removePurchaseItem(item.id)} />)}
-                      <button type="button" className="secondary-button task-add-button" onClick={addPurchaseItem} disabled={form.purchaseItems.length >= MAX_COMBINATION_TASKS} title={form.purchaseItems.length >= MAX_COMBINATION_TASKS ? 'Máximo 4 compras por domicilio' : undefined}>＋ Agregar compra{form.purchaseItems.length >= MAX_COMBINATION_TASKS ? ' · máximo 4' : ''}</button>
+                      <button type="button" className="secondary-button task-add-button" onClick={addPurchaseItem} disabled={form.purchaseItems.length >= MAX_COMBINATION_TASKS} title={form.purchaseItems.length >= MAX_COMBINATION_TASKS ? `Máximo ${MAX_COMBINATION_TASKS} compras por domicilio` : undefined}>＋ Agregar compra{form.purchaseItems.length >= MAX_COMBINATION_TASKS ? ` · máximo ${MAX_COMBINATION_TASKS}` : ''}</button>
                     </div>}
                     {selectedServiceType.requiresCross && <div className="task-block">
                       <div className="task-block-header"><div><strong>Cruces entre farmacias</strong><small>Origen es donde se recoge; destino es donde se entrega el producto.</small></div><span className="task-count">{form.crossStops.length}</span></div>
                       {form.crossStops.map((stop, index) => <CrossTaskRow key={stop.id} stop={stop} index={index} canRemove={form.crossStops.length > 1} availablePharmacies={availablePharmacies} requestingPharmacy={pharmacy} onChange={(field, value) => updateCrossStop(stop.id, field, value)} onRemove={() => removeCrossStop(stop.id)} />)}
-                      <button type="button" className="secondary-button task-add-button" onClick={addCrossStop} disabled={form.crossStops.length >= MAX_COMBINATION_TASKS} title={form.crossStops.length >= MAX_COMBINATION_TASKS ? 'Máximo 4 cruces por domicilio' : undefined}>＋ Agregar cruce{form.crossStops.length >= MAX_COMBINATION_TASKS ? ' · máximo 4' : ''}</button>
+                      <button type="button" className="secondary-button task-add-button" onClick={addCrossStop} disabled={form.crossStops.length >= MAX_COMBINATION_TASKS} title={form.crossStops.length >= MAX_COMBINATION_TASKS ? `Máximo ${MAX_COMBINATION_TASKS} cruces por domicilio` : undefined}>＋ Agregar cruce{form.crossStops.length >= MAX_COMBINATION_TASKS ? ` · máximo ${MAX_COMBINATION_TASKS}` : ''}</button>
                     </div>}
                   </div>}
 
